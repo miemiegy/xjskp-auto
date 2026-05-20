@@ -1,0 +1,14 @@
+# Python 虚拟环境
+venv/
+
+# 日志文件
+logs/
+*.log
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS 系统文件
+.DS_Store

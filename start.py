@@ -4,7 +4,6 @@ import random
 import json5
 import cv2
 import numpy as np
-import pygetwindow as gw
 import pyautogui
 import pytesseract
 import logging
@@ -12,7 +11,9 @@ from logging.handlers import RotatingFileHandler
 from mss import mss
 from PIL import Image
 import sys
-import ctypes
+
+# Mac 窗口管理（替代 Windows 的 pygetwindow）
+import mac_window as gw
 
 # 全局配置变量
 config = None
@@ -20,20 +21,14 @@ config = None
 # 全局调试模式标志
 DEBUG_MODE = False
 
-# 检查管理员权限
-def is_admin():
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
-        return False
-
-# 如果不是管理员，请求提升权限
-if not is_admin():
-    # 重新以管理员权限运行脚本
-    ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, " ".join(sys.argv), None, 1
-    )
-    sys.exit(0)
+# Mac 不需要管理员权限检查，但需要辅助功能权限才能控制鼠标和窗口
+# 运行时如果提示权限不足，请前往：系统设置 -> 隐私与安全 -> 辅助功能 -> 添加终端/IDE
+print("=" * 60)
+print("向僵尸开炮 - Mac 自动化脚本")
+print("提示：首次运行可能需要授予【辅助功能】权限")
+print("      系统设置 -> 隐私与安全 -> 辅助功能")
+print("=" * 60)
+print()
 
 # 设置日志
 def setup_logging(log_file_path):
@@ -161,7 +156,7 @@ def check_all_templates():
     return missing_templates
 
 def get_window_info(window_title):
-    """获取游戏窗口信息，支持模糊匹配"""
+    """获取游戏窗口信息，支持模糊匹配（标题或进程名）"""
     try:
         # 获取所有窗口
         all_windows = gw.getAllWindows()
@@ -171,15 +166,24 @@ def get_window_info(window_title):
         for window in all_windows:
             if window_title.lower() in window.title.lower():
                 matching_windows.append(window)
-                print_debug(f"找到匹配窗口: {window.title}")
+                print_debug(f"找到标题匹配窗口: {window.title}")
+        
+        # 如果标题匹配失败，尝试匹配进程名（Mac 上很多应用 Quartz 获取不到标题）
+        if not matching_windows:
+            for window in all_windows:
+                app_name = getattr(window, '_app', '') or ''
+                if window_title.lower() in app_name.lower():
+                    matching_windows.append(window)
+                    print_debug(f"找到进程名匹配窗口: {app_name}")
         
         if not matching_windows:
-            print_info(f"未找到标题包含 '{window_title}' 的窗口")
-            # 列出所有窗口标题以便调试
-            print_debug("当前所有窗口标题:")
+            print_info(f"未找到标题或进程名包含 '{window_title}' 的窗口")
+            # 列出所有窗口以便调试
+            print_debug("当前所有窗口:")
             for window in all_windows:
-                if window.title:  # 只显示有标题的窗口
-                    print_debug(f"- '{window.title}'")
+                title = window.title if window.title else "(无标题)"
+                app = getattr(window, '_app', '')
+                print_debug(f"- 标题: '{title}' | 进程: '{app}'")
             return None
         
         # 优先选择活动窗口
@@ -192,7 +196,8 @@ def get_window_info(window_title):
         # 如果没有活动窗口，选择第一个匹配窗口
         if active_window is None:
             active_window = matching_windows[0]
-            print_info(f"找到 {len(matching_windows)} 个匹配窗口，使用第一个窗口: {active_window.title}")
+            win_title = active_window.title if active_window.title else getattr(active_window, '_app', 'Unknown')
+            print_info(f"找到 {len(matching_windows)} 个匹配窗口，使用第一个窗口: {win_title}")
         
         # 确保窗口可见
         if active_window.isMinimized:
@@ -2215,6 +2220,206 @@ def click_send_invite_button_default(window_info):
     
     return False
 
+def click_hq_join_button(window_info):
+    """点击寰球救援房间列表中的「加入」按钮"""
+    max_attempts = 3
+    snipe_settings = config.get("hq_snipe_settings", {})
+    
+    for attempt in range(max_attempts):
+        print_info(f"第{attempt+1}/{max_attempts}次尝试：寻找并点击「加入」按钮")
+        
+        screenshot = capture_screenshot(window_info)
+        if screenshot is None:
+            time.sleep(0.5)
+            continue
+        
+        # 尝试匹配加入按钮模板
+        join_templates = snipe_settings.get("join_button_templates", ["hq_join.png", "hq_join2.png"])
+        match_result, match_pos, match_val, match_size = multi_template_match(
+            screenshot,
+            join_templates,
+            threshold=0.6
+        )
+        
+        if match_result and match_pos:
+            print_info(f"找到加入按钮（匹配值：{match_val:.4f}，位置：{match_pos}）")
+            click_success = click_position(
+                window_info,
+                match_pos[0], match_pos[1],
+                0, 0,
+                "加入按钮"
+            )
+            if click_success:
+                return True
+        else:
+            print_info("未找到加入按钮模板，尝试默认位置")
+            if click_hq_join_button_default(window_info):
+                return True
+            
+        time.sleep(0.5)
+    
+    return False
+
+def click_hq_join_button_default(window_info):
+    """点击加入按钮的默认位置（房间列表右侧）"""
+    snipe_settings = config.get("hq_snipe_settings", {})
+    x = int(window_info["width"] * snipe_settings.get("join_default_x_ratio", 0.75))
+    y = int(window_info["height"] * snipe_settings.get("join_default_y_ratio", 0.35))
+    
+    click_success = click_position(
+        window_info,
+        x, y,
+        0, 0,
+        "加入按钮（默认位置）"
+    )
+    
+    if click_success:
+        time.sleep(0.5)
+        return True
+    return False
+
+def click_hq_refresh_button(window_info):
+    """点击刷新按钮，刷新寰球救援房间列表"""
+    snipe_settings = config.get("hq_snipe_settings", {})
+    refresh_templates = snipe_settings.get("refresh_button_templates", ["hq_refresh.png"])
+    
+    screenshot = capture_screenshot(window_info)
+    if screenshot is None:
+        return False
+    
+    match_result, match_pos, match_val, match_size = multi_template_match(
+        screenshot,
+        refresh_templates,
+        threshold=0.6
+    )
+    
+    if match_result and match_pos:
+        print_info(f"找到刷新按钮（匹配值：{match_val:.4f}）")
+        click_success = click_position(
+            window_info,
+            match_pos[0], match_pos[1],
+            0, 0,
+            "刷新按钮"
+        )
+        if click_success:
+            return True
+    else:
+        # 尝试默认位置
+        x = int(window_info["width"] * snipe_settings.get("refresh_default_x_ratio", 0.85))
+        y = int(window_info["height"] * snipe_settings.get("refresh_default_y_ratio", 0.15))
+        click_success = click_position(
+            window_info,
+            x, y,
+            0, 0,
+            "刷新按钮（默认位置）"
+        )
+        if click_success:
+            return True
+    
+    return False
+
+def click_hq_ready_button(window_info):
+    """点击准备/开始按钮（加入别人房间后）"""
+    snipe_settings = config.get("hq_snipe_settings", {})
+    ready_templates = snipe_settings.get("ready_button_templates", ["hq_ready.png"])
+    
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        screenshot = capture_screenshot(window_info)
+        if screenshot is None:
+            time.sleep(0.5)
+            continue
+        
+        match_result, match_pos, match_val, match_size = multi_template_match(
+            screenshot,
+            ready_templates,
+            threshold=0.6
+        )
+        
+        if match_result and match_pos:
+            print_info(f"找到准备按钮（匹配值：{match_val:.4f}）")
+            click_success = click_position(
+                window_info,
+                match_pos[0], match_pos[1],
+                0, 0,
+                "准备按钮"
+            )
+            if click_success:
+                return True
+        
+        # 如果没有准备按钮，尝试直接检测并开始游戏按钮
+        if detect_hq_start_button(window_info):
+            print_info("检测到可以直接开始游戏，尝试点击开始")
+            if click_hq_start_button(window_info):
+                return True
+        
+        time.sleep(0.5)
+    
+    return False
+
+def complete_hq_snipe_round(window_info, target_level):
+    """抢房模式：自动加入别人的寰球救援房间并打完"""
+    print_info(f"\n===== 开始寰球抢房模式，目标等级 {target_level} 级 =====")
+    
+    snipe_settings = config.get("hq_snipe_settings", {})
+    max_attempts = snipe_settings.get("max_snipe_attempts", 0)
+    refresh_interval = snipe_settings.get("refresh_interval", 2.0)
+    attempt = 0
+    
+    while max_attempts == 0 or attempt < max_attempts:
+        attempt += 1
+        print_info(f"\n--- 第{attempt}次抢房尝试 ---")
+        
+        # 1. 确保在寰球界面
+        in_hq = detect_hq_screen(window_info)
+        if not in_hq:
+            print_info("当前不在寰球界面，等待...")
+            time.sleep(refresh_interval)
+            continue
+        
+        # 2. 尝试点击加入按钮
+        if click_hq_join_button(window_info):
+            print_info("点击加入按钮成功，等待进入房间...")
+            time.sleep(snipe_settings.get("after_join_wait", 1.5))
+            
+            # 3. 检测是否成功进入房间
+            in_team = detect_team_up_interface(window_info)
+            can_start = detect_hq_start_button(window_info)
+            
+            if in_team or can_start:
+                print_info("成功进入房间，准备开始游戏...")
+                
+                # 4. 点击准备/开始
+                if click_hq_ready_button(window_info):
+                    print_info("准备成功，等待游戏开始...")
+                    time.sleep(2)
+                    
+                    # 5. 执行游戏流程
+                    game_success = execute_hq_game_flow(window_info, target_level)
+                    if game_success:
+                        print_info("抢房+游戏流程完成")
+                        return True
+                    else:
+                        print_error("游戏流程执行失败")
+                        # 失败后回到寰球界面重试
+                        time.sleep(2)
+                        continue
+                else:
+                    print_error("点击准备/开始失败，房间可能已解散")
+                    # 尝试返回寰球界面
+                    click_back_button(window_info)
+                    time.sleep(1)
+            else:
+                print_info("点击加入后未成功进入房间（可能已满），继续刷新...")
+        else:
+            print_info("当前没有可加入的房间，尝试刷新列表...")
+            click_hq_refresh_button(window_info)
+        
+        time.sleep(refresh_interval)
+    
+    print_error(f"抢房失败，已达最大尝试次数({max_attempts})")
+    return False
+
 def check_tesseract(tesseract_path):
     """检查Tesseract是否可用"""
     try:
@@ -2413,18 +2618,26 @@ def main():
         success_count = 0
         fail_count = 0
         
+        # 判断是抢房模式还是自建房间模式
+        snipe_mode = config.get("hq_snipe_mode", False)
+        mode_name = "抢房" if snipe_mode else "自建房间"
+        print_info(f"寰球模式类型：{mode_name}")
+        
         while loop_count == 0 or current_loop < loop_count:
             current_loop += 1
-            print_info(f"\n===== 开始第{current_loop}轮寰球模式流程 =====")
+            print_info(f"\n===== 开始第{current_loop}轮寰球{mode_name}流程 =====")
             
-            # 完成一轮寰球模式游戏
-            success = complete_hq_round(window_info, config["target_level"])
+            # 根据模式选择不同的执行逻辑
+            if snipe_mode:
+                success = complete_hq_snipe_round(window_info, config["target_level"])
+            else:
+                success = complete_hq_round(window_info, config["target_level"])
             
             if success:
-                print_info(f"第{current_loop}轮寰球模式流程完成")
+                print_info(f"第{current_loop}轮寰球{mode_name}流程完成")
                 success_count += 1
             else:
-                print_error(f"第{current_loop}轮寰球模式流程失败")
+                print_error(f"第{current_loop}轮寰球{mode_name}流程失败")
                 fail_count += 1
                     
             # 如果不是最后一轮，等待一段时间再开始下一轮
@@ -2433,7 +2646,7 @@ def main():
                 print_info(f"等待{wait_time}秒后开始下一轮")
                 time.sleep(wait_time)
         
-        print_info(f"\n===== 所有寰球模式流程已完成 =====")
+        print_info(f"\n===== 所有寰球{mode_name}流程已完成 =====")
         print_info(f"总轮次：{current_loop}，成功：{success_count}，失败：{fail_count}")
     
     # 启动主循环
