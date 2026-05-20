@@ -181,6 +181,17 @@
         "hq_skill2.png"
     ],
 
+    // 招募频道界面检测模板
+    "hq_recruit_title_templates": [
+        "hq_recruit_title.png"
+    ],
+    "hq_rescue_card_templates": [
+        "hq_rescue_card.png"
+    ],
+    "hq_join_btn_templates": [
+        "hq_join_btn.png"
+    ],
+
     // =========================================================================
     // =                    寰球抢房模式专属配置（加入别人房间）              =
     // =========================================================================

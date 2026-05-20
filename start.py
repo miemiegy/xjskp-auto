@@ -1008,20 +1008,27 @@ def wait_for_skill_selection_screen(window_info):
     return False
 
 def detect_hq_screen(window_info):
-    """检测是否在寰球界面（通过邀请按钮判断）"""
+    """检测是否在招募频道界面（通过招募频道标题或寰球救援卡片判断）"""
     screenshot = capture_screenshot(window_info)
     if screenshot is None:
         return False
-        
-    # 检测邀请按钮是否存在，使用配置的模板
-    match_result, _, match_val, _ = multi_template_match(
-        screenshot, 
-        config.get("hq_invite_templates", ["invite.png", "invite2.png"]),
-        threshold=0.6
+    
+    # 方法1：检测"招募频道"标题
+    title_match, _, title_val, _ = multi_template_match(
+        screenshot,
+        config.get("hq_recruit_title_templates", ["hq_recruit_title.png"]),
+        threshold=0.5
     )
     
-    is_hq_screen = match_result
-    print_info(f"寰球界面检测：{'存在' if is_hq_screen else '不存在'}（匹配值：{match_val:.4f}）")
+    # 方法2：检测"寰球救援"卡片
+    card_match, _, card_val, _ = multi_template_match(
+        screenshot,
+        config.get("hq_rescue_card_templates", ["hq_rescue_card.png"]),
+        threshold=0.5
+    )
+    
+    is_hq_screen = title_match or card_match
+    print_info(f"招募频道检测：{'存在' if is_hq_screen else '不存在'}（标题：{title_val:.4f}，卡片：{card_val:.4f}）")
     
     return is_hq_screen
 
@@ -2223,7 +2230,6 @@ def click_send_invite_button_default(window_info):
 def click_hq_join_button(window_info):
     """点击寰球救援房间列表中的「加入」按钮"""
     max_attempts = 3
-    snipe_settings = config.get("hq_snipe_settings", {})
     
     for attempt in range(max_attempts):
         print_info(f"第{attempt+1}/{max_attempts}次尝试：寻找并点击「加入」按钮")
@@ -2233,12 +2239,12 @@ def click_hq_join_button(window_info):
             time.sleep(0.5)
             continue
         
-        # 尝试匹配加入按钮模板
-        join_templates = snipe_settings.get("join_button_templates", ["hq_join.png", "hq_join2.png"])
-        match_result, match_pos, match_val, match_size = multi_template_match(
+        # 方法1：尝试匹配"加入》"按钮模板
+        join_templates = config.get("hq_join_btn_templates", ["hq_join_btn.png"])
+        match_result, match_pos, match_val, _ = multi_template_match(
             screenshot,
             join_templates,
-            threshold=0.6
+            threshold=0.5
         )
         
         if match_result and match_pos:
@@ -2251,26 +2257,50 @@ def click_hq_join_button(window_info):
             )
             if click_success:
                 return True
-        else:
-            print_info("未找到加入按钮模板，尝试默认位置")
-            if click_hq_join_button_default(window_info):
+        
+        # 方法2：尝试匹配"寰球救援"卡片，点击卡片右侧区域
+        card_templates = config.get("hq_rescue_card_templates", ["hq_rescue_card.png"])
+        card_match, card_pos, card_val, card_size = multi_template_match(
+            screenshot,
+            card_templates,
+            threshold=0.5
+        )
+        
+        if card_match and card_pos and card_size:
+            # 点击卡片右下角（加入按钮区域）
+            click_x = card_pos[0] + int(card_size[0] * 0.4)  # 卡片右侧
+            click_y = card_pos[1] + int(card_size[1] * 0.3)  # 卡片中下
+            print_info(f"找到寰球救援卡片（匹配值：{card_val:.4f}），点击卡片右侧区域({click_x}, {click_y})")
+            click_success = click_position(
+                window_info,
+                click_x, click_y,
+                0, 0,
+                "寰球救援卡片-右侧"
+            )
+            if click_success:
                 return True
+        
+        # 方法3：固定位置点击第一个房间的加入区域
+        print_info("模板匹配失败，使用固定位置点击")
+        if click_hq_join_button_default(window_info):
+            return True
             
         time.sleep(0.5)
     
     return False
 
 def click_hq_join_button_default(window_info):
-    """点击加入按钮的默认位置（房间列表右侧）"""
-    snipe_settings = config.get("hq_snipe_settings", {})
-    x = int(window_info["width"] * snipe_settings.get("join_default_x_ratio", 0.75))
-    y = int(window_info["height"] * snipe_settings.get("join_default_y_ratio", 0.35))
+    """点击加入按钮的默认位置（招募频道第一个房间卡片的右下角）"""
+    # 基于招募频道截图分析，第一个寰球救援卡片大约在窗口中间偏上位置
+    # "加入》"按钮在卡片右下角
+    x = int(window_info["width"] * 0.82)
+    y = int(window_info["height"] * 0.36)
     
     click_success = click_position(
         window_info,
         x, y,
         0, 0,
-        "加入按钮（默认位置）"
+        "加入按钮（默认位置-第一个房间）"
     )
     
     if click_success:
@@ -2361,64 +2391,64 @@ def complete_hq_snipe_round(window_info, target_level):
     """抢房模式：自动加入别人的寰球救援房间并打完"""
     print_info(f"\n===== 开始寰球抢房模式，目标等级 {target_level} 级 =====")
     
-    snipe_settings = config.get("hq_snipe_settings", {})
-    max_attempts = snipe_settings.get("max_snipe_attempts", 0)
-    refresh_interval = snipe_settings.get("refresh_interval", 2.0)
+    refresh_interval = 2.0
     attempt = 0
     
-    while max_attempts == 0 or attempt < max_attempts:
+    while True:
         attempt += 1
         print_info(f"\n--- 第{attempt}次抢房尝试 ---")
         
-        # 1. 确保在寰球界面
-        in_hq = detect_hq_screen(window_info)
-        if not in_hq:
-            print_info("当前不在寰球界面，等待...")
+        # 1. 检测是否在招募频道
+        in_recruit = detect_hq_screen(window_info)
+        if not in_recruit:
+            print_info("当前不在招募频道，等待...")
             time.sleep(refresh_interval)
             continue
         
-        # 2. 尝试点击加入按钮
+        # 2. 尝试点击第一个房间的"加入》"按钮
         if click_hq_join_button(window_info):
-            print_info("点击加入按钮成功，等待进入房间...")
-            time.sleep(snipe_settings.get("after_join_wait", 1.5))
+            print_info("点击加入成功，等待进入房间...")
+            time.sleep(2.0)
             
-            # 3. 检测是否成功进入房间
+            # 3. 检测是否成功进入房间（通过检测组队邀请界面或开始按钮）
             in_team = detect_team_up_interface(window_info)
             can_start = detect_hq_start_button(window_info)
             
             if in_team or can_start:
-                print_info("成功进入房间，准备开始游戏...")
+                print_info("成功进入房间！")
                 
                 # 4. 点击准备/开始
                 if click_hq_ready_button(window_info):
-                    print_info("准备成功，等待游戏开始...")
+                    print_info("准备成功，开始游戏...")
                     time.sleep(2)
                     
                     # 5. 执行游戏流程
                     game_success = execute_hq_game_flow(window_info, target_level)
                     if game_success:
-                        print_info("抢房+游戏流程完成")
-                        return True
+                        print_info("本轮寰球救援完成！")
+                        # 自动继续下一轮抢房
+                        time.sleep(2)
+                        continue
                     else:
-                        print_error("游戏流程执行失败")
-                        # 失败后回到寰球界面重试
+                        print_error("游戏流程失败，继续抢房...")
                         time.sleep(2)
                         continue
                 else:
-                    print_error("点击准备/开始失败，房间可能已解散")
-                    # 尝试返回寰球界面
+                    print_error("点击准备失败，房间可能已解散")
                     click_back_button(window_info)
                     time.sleep(1)
             else:
-                print_info("点击加入后未成功进入房间（可能已满），继续刷新...")
+                print_info("加入失败（可能房间已满），继续抢下一个...")
+                # 点击空白处关闭可能的弹窗
+                click_position(window_info, 
+                    int(window_info["width"] * 0.5), 
+                    int(window_info["height"] * 0.5),
+                    0, 0, "关闭弹窗")
+                time.sleep(1)
         else:
-            print_info("当前没有可加入的房间，尝试刷新列表...")
-            click_hq_refresh_button(window_info)
+            print_info("未找到可加入的房间，等待刷新...")
         
         time.sleep(refresh_interval)
-    
-    print_error(f"抢房失败，已达最大尝试次数({max_attempts})")
-    return False
 
 def check_tesseract(tesseract_path):
     """检查Tesseract是否可用"""
